@@ -1,56 +1,40 @@
 const express = require('express');
-const puppeteer = require('puppeteer');
-const { PuppeteerScreenRecorder } = require('puppeteer-screen-recorder');
+const { launch, getStream } = require("puppeteer-stream");
+const fs = require("fs");
+const puppeteer = require('puppeteer')
 
 const app = express();
 app.use(express.json());
 
-let browser;
-let page;
-let recorder;
+const recordings = new Map()
 
-async function stopRecording(page) {
-    if (recorder) {
-        await recorder.stop();
+async function stopRecording(stream, file) {
+    if (stream) {
+        await stream.destroy();
     }
 
-    if (page) {
-        await page.close();
-    }
-
-    if (browser) {
-        await browser.close();
+    if (file) {
+        file.close();
     }
 }
 
 
 async function startRecording(url, outputPath) {
 
-    browser = await puppeteer.launch({
-        args: ['--use-fake-ui-for-media-stream'],
+    const file = fs.createWriteStream('record/'+ outputPath);
+    const browser = await launch({
+        executablePath: puppeteer.executablePath(),
         headless: true,
-    });
-    // const urlNew = new URL(url + '?token=$2a$12$wUdztTLUapm7X7uXXyCOLOXnOE6FZqqMOiA4uDByAFMHcmXyonr9K')
-    const urlNew = new URL(url)
-    const context = browser.defaultBrowserContext();
-    const origin = new URL(urlNew).origin;
-    context.clearPermissionOverrides();
-    context.overridePermissions(origin, ['camera']);
+	});
 
-    page = await browser.newPage();
-    recorder = new PuppeteerScreenRecorder(page);
+	const page = await browser.newPage();
+	await page.goto(url.href);
+	const stream = await getStream(page, { audio: true, video: true });
+	console.log("recording");
 
-    await page.setViewport({ width: 1920, height: 1024 });
-    await page.goto(urlNew.href);
+	stream.pipe(file);
 
-    const granted = await page.evaluate(async () => {
-        return (await navigator.permissions.query({ name: 'camera' })).state;
-    });
-    console.log(outputPath);
-
-    await recorder.start('./report/video/' + outputPath);
-
-    console.log('Granted:', granted);
+    recordings.set(url.href, {stream, file, url})
 }
 
 app.post('/start', async (req, res) => {
@@ -67,16 +51,28 @@ app.post('/start', async (req, res) => {
 });
 
 app.post('/stop', async (req, res) => {
+    const { url, outputPath } = req.body;
+
+    const recording = recordings.get(url)
+    console.log(recording);
+
+    if (!recording) {
+        res.status(404).json({ error: 'Không tìm thấy bản ghi video với đường dẫn đầu ra đã cho' });
+        return;
+    }
+
+    const { stream, file } = recording;
+
     try {
-        await stopRecording(page);
-        res.status(200).json({ message: 'Dừng ghi video thành công' });
+      await stopRecording(stream, file);
+      res.status(200).json({ message: 'Dừng ghi video thành công' });
     } catch (error) {
-        console.error('Không thể dừng ghi video:', error);
-        res.status(500).json({ error: 'Lỗi khi dừng ghi video' });
+      console.error('Không thể dừng ghi video:', error);
+      res.status(500).json({ error: 'Lỗi khi dừng ghi video' });
     }
 });
 
-const port = 8888;
+const port = 8999;
 app.listen(port, () => {
-    console.log(`Server đang lắng nghe tại ${port}`);
+  console.log(`Server đang lắng nghe tại ${port}`);
 });
